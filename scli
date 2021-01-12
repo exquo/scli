@@ -202,10 +202,11 @@ def get_prog_dir():
     return os.path.dirname(os.path.realpath(__file__))
 
 def get_version():
-    # Do not use `logging` here, as it's called before logging is setup.
+    # Do not use `logging` in this function, as it's called before logging.basicConfig().
     prog_dir = get_prog_dir()
     print(prog_dir)
     git_dir = os.path.join(prog_dir, '.git')
+    #git_dir = "/debug/test/"
     git_cmd = ['git', '--git-dir', git_dir, 'describe']
     #git_cmd = ['git', 'describe']
     #git_cmd = ['madeup', 'bogus']
@@ -213,11 +214,9 @@ def get_version():
         proc = subprocess.run(git_cmd, capture_output=True, check=True, text=True)
         #proc = subprocess.run(git_cmd, capture_output=True, check=False, text=True)
         #logging.debug(pprint.pformat(proc))
-        #return proc.stdout
         return proc.stdout.strip()
     except (FileNotFoundError, subprocess.CalledProcessError):
-        print(proc)
-        #pass
+        pass
 
     version_file_path = os.path.join(prog_dir, 'VERSION')
     with open(version_file_path) as f:
@@ -225,7 +224,7 @@ def get_version():
     print(repr(version_str))
     # Assumes VERSION is formatted with `$Format:%h %d$`
     if version_str.startswith('$'):
-        return None
+        return "v?"
     TAG_RE = r"tag: v(.+?)[,)]"
     tag_re = re.compile(TAG_RE)
     tag_re_match = tag_re.search(version_str)
