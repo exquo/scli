@@ -19,6 +19,9 @@ from subprocess import PIPE, Popen
 from datetime import datetime
 import base64
 import collections
+import shutil
+
+import pprint  # DEBUG
 
 import urwid
 
@@ -129,34 +132,96 @@ def get_urls(txt):
     return re.findall(r'(https?://[^\s]+)', txt)
 
 
-def mk_call(cmd, rmap=None, disown=False, use_pipe=True):
-    if not rmap:
-        rmap = {}
+#def mk_call(cmd, rmap=None, disown=False, use_pipe=True):
+    ## TODO: shlex.split() instead of shell=True
+        ## ? Add shell=False as opt arg
+        ## Use text=True in Popen, so no need to decode()
+    #if rmap:
+        #for key, val in rmap.items():
+            #cmd = cmd.replace(key, val)
+#
+    #if disown:
+        #with open(os.devnull, 'w') as f:
+            #subprocess.Popen(cmd, shell=True, stdout=f, stderr=f, preexec_fn=os.setpgrp)
+    #else:
+        #if use_pipe:
+            #pipe = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        #else:
+            #pipe = subprocess.Popen(cmd, shell=True)
+#
+        #out, err = pipe.communicate()
+        #logging.info('mk_call:%s', cmd)
+        #try:
+            #if pipe.returncode == 0:
+                #logging.info('mk_call:exit_0:%s', out.decode('utf-8'))
+            #else:
+                #logging.critical('mk_call:exit_%d:%s', pipe.returncode, err.decode('utf-8'))
+        #except AttributeError:
+            #pass
+#
+        #return out
 
-    for key, val in rmap.items():
-        cmd = cmd.replace(key, val)
 
-    if disown:
-        with open(os.devnull, 'w') as f:
-            subprocess.Popen(cmd, shell=True, stdout=f, stderr=f, preexec_fn=os.setpgrp)
-    else:
-        if use_pipe:
-            pipe = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        else:
-            pipe = subprocess.Popen(cmd, shell=True)
+def mk_call(cmd, rmap=None, background=False, capture_output=True, shell=False):
+    logging.debug('mk_call: %s', pprint.pformat(locals()))
+    if rmap:
+        for key, val in rmap.items():
+            cmd = cmd.replace(key, val)
+    logging.debug('mk_call: %s', cmd)
 
-        out, err = pipe.communicate()
-        logging.info('mk_call:%s', cmd)
-        try:
-            if pipe.returncode == 0:
-                logging.info('mk_call:exit_0:%s', out.decode('utf-8'))
-            else:
-                logging.critical('mk_call:exit_%d:%s', pipe.returncode, err.decode('utf-8'))
-        except AttributeError:
-            pass
+    if not shell:
+        cmd = shlex.split(cmd)
+    logging.info('mk_call: %s', cmd)
 
-        return out
+    if background:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=shell)
+        return proc
 
+    proc = subprocess.run(cmd, capture_output=capture_output, shell=shell, text=True)
+
+    #logging.debug(proc)
+    if proc.returncode != 0:
+        logging.error('mk_call: command %s exited with code `%d`: %s', proc.args, proc.returncode, proc.stderr)
+    elif proc.stdout:
+        logging.info('mk_call: %s', proc.stdout)
+
+    return proc
+
+def get_default_editor():
+    for env_var in ('VISUAL', 'EDITOR'):
+        ret = os.getenv(env_var)
+        if ret is not None:
+            return ret
+    for exe in ('sensible-editor', 'editor', 'nano', 'emacs', 'vi'):
+        ret = shutil.which(exe)
+        if ret is not None:
+            return ret
+    return ret
+
+def get_prog_dir():
+    return os.path.dirname(os.path.realpath(__file__))
+
+def get_version():
+    LATEST_RELEASE = "0.2.2"
+        # If we don't have a build / packaging step, this var has to be set manually (before doing `git tag`).
+        # Alternatively, make a github action to use `export-subst` for `git-archive`
+            # TODO: experiment
+        # Omit the "v" before the numbers.
+    prog_dir = get_prog_dir()
+    #logging.debug(prog_dir)
+    git_dir = os.path.join(prog_dir, '.git')
+    git_cmd = ['git', '--git-dir', git_dir, 'describe']
+    #git_cmd = ['git', 'describe']
+    #git_cmd = ['madeup', 'bogus']
+    try:
+        proc = subprocess.run(git_cmd, capture_output=True, check=True, text=True)
+        #proc = subprocess.run(git_cmd, capture_output=True, check=False, text=True)
+        #logging.debug(pprint.pformat(proc))
+        #return proc.stdout
+        return proc.stdout.strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return LATEST_RELEASE
+        # NOTE: this version will be wrong if a code blob (not a release) is downloaded (as an archive, not cloned with git), and has new commits since the last release.
 
 PHONE_NUM_REGEX = re.compile('^\\+[1-9][0-9]{6,14}$')
 # https://github.com/signalapp/libsignal-service-java/blob/master/java/src/main/java/org/whispersystems/signalservice/api/util/PhoneNumberFormatter.java
@@ -622,7 +687,8 @@ class clip:
     @staticmethod
     def put(state, txt):
         cmd = state.cfg.clipboard_put_command
-        if cmd == "":
+        #if cmd == "":
+        if cmd is None:
             return clip.xput(txt)
 
         return mk_call(cmd, {'%s': txt})
@@ -630,7 +696,8 @@ class clip:
     @staticmethod
     def files(state):
         cmd = state.cfg.clipboard_get_command
-        if cmd == "":
+        #if cmd == "":
+        if cmd is None:
             return clip.xfiles()
 
         return mk_call(cmd).split('\n')
@@ -914,6 +981,10 @@ class Commands:
             self.state.set_error(":edit Error: no contact currently selected")
             return
 
+        if self.state.cfg.editor_command is None:
+            self.state.set_error(":edit Error: no command for external editor set")
+            return
+
         filename = ''
         if args:
             filename, *message = split_path(*args)
@@ -928,8 +999,11 @@ class Commands:
                 msg_file.write(*message)
 
         self.state.loop.stop()
-        mk_call(self.state.cfg.editor_command + " " + shlex.quote(msg_file_path), use_pipe=False)
-        print('Please wait...')
+        #logging.debug("%r", self.state.cfg.editor_command)
+        cmd = self.state.cfg.editor_command + " " + shlex.quote(msg_file_path)
+        #logging.debug(cmd)
+        mk_call(cmd, capture_output=False)
+        #print('Please wait...')
         self.state.loop.start()
 
         with open(msg_file_path, 'r') as msg_file:
@@ -960,8 +1034,9 @@ class Commands:
     def open_file(self, path):
         if os.path.exists(path):
             if isinstance(path, dict):
-                mk_call(self.state.cfg.open_command, path, True)
-            mk_call(self.state.cfg.open_command, {'%u': path}, True)
+                #mk_call(self.state.cfg.open_command, path, True)
+                mk_call(self.state.cfg.open_command, path, background=True)
+            mk_call(self.state.cfg.open_command, {'%u': path}, background=True)
 
     def attach(self, args):
         if self.state.current_contact is None:
@@ -1007,7 +1082,7 @@ class Commands:
         txt = get_envelope_msg(envelope)
         urls = get_urls(txt)
         if urls:
-            mk_call(self.state.cfg.open_command, {'%u': urls[0]}, True)
+            mk_call(self.state.cfg.open_command, {'%u': urls[0]}, background=True)
             return True
 
         return False
@@ -1035,7 +1110,16 @@ class Commands:
 
     def send_notification(self, sender, message):
         if self.state.cfg.enable_notifications:
-            mk_call(self.state.cfg.notification_command, {'%s': sender, '%m': message})
+            rmap = {}
+            for abbr, var in (('%s', sender), ('%m', message)):
+                var = var.replace(r"'", r"'\''")
+                #rmap[abbr] = shlex.quote(var)
+                rmap[abbr] = var
+            mk_call(
+                    self.state.cfg.notification_command,
+                    rmap,
+                    #shell=True
+                    )
 
     def rename_contact(self, args):
         # :renameContact +NUMBER new name here  -> use +NUMBER number
@@ -2474,6 +2558,10 @@ class DeliveryStatus:
 # #############################################################################
 
 def link_device(device_name):
+#def link_device(cfg):
+    #device_name = cfg.name
+    print("device_name = ", device_name)
+    return
     try:
         import pyqrcode
     except ImportError:
@@ -2489,7 +2577,7 @@ def link_device(device_name):
     else:
         sys.exit('Encountered an error while linking: \n{}\n{}'.format(line, pipe_link.stderr.read()))
 
-    print('Scan the QR code with Signal app on your phone and wait for the linking process to finish. This may take a moment...')
+    print('Scan the QR code with Signal app on your phone and wait for the linking process to finish.\nYou might need to zoom out for the QR code to display properly.\nThis may take a moment...')
 
     pipe_link.wait()
     if pipe_link.returncode != 0:
@@ -2509,21 +2597,6 @@ def link_device(device_name):
 
     print('Done.')
     sys.exit(0)
-
-def parse_cfg_file(cfg_file_path):
-    vars = {}
-    cfg_file_path = os.path.expanduser(cfg_file_path)
-    if os.path.exists(cfg_file_path):
-        with open(cfg_file_path) as cfg_file:
-            for line in cfg_file:
-                if not line.startswith('#') and line.strip() != "":
-                    name, var = line.partition("=")[::2]
-                    vars[name.strip().replace('-', '_')] = var.strip()
-    elif cfg_file_path != SCLI_CFG_FILE and cfg_file_path != "":
-        print('Given config file not found: ' + cfg_file_path, file=sys.stderr)
-        sys.exit(2)
-
-    return vars
 
 def detect_user_name():
     ulist = []
@@ -2545,151 +2618,341 @@ def detect_user_name():
             print("\tscli --username=" + u, file=sys.stderr)
         sys.exit(1)
 
-def main():
-    parser = argparse.ArgumentParser()
+def make_arg_parser():
+    #parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter
+            # TODO: can remove default descr in help msgs now
+            # TODO: ? do not use ArgumentDefaultsHelpFormatter, instead manually supply default vals to args that need them.
+                # Or write my own formatter class for this?
+            )
 
-    parser.add_argument(
-        '-l',
-        '--link',
-        nargs='?',
-        const='scli',
-        type=str,
-        metavar='CUSTOM_NAME',
-        help='Link a device. If you skip CUSTOM_NAME, device name will be registered as "scli".'
+    # TODO: remove `type=str` everywhere, it's default
+        # TODO: default is not necessary when using store_true/false
+    # TODO: make command-line options override the config, not vice versa
+
+    # TODO: ? add --version?
+    # - Rename `--group-contacts`
+
+    # TODO: update README when done
+        # `link` w/o `--`
+        # optional args / flags in config file: `true`, `t`, `yes`, `y` (in any capitalizations) evaluates to True, anything else, to False
+        # in config file example, add spaces around `=`
+
+    # TODO: rearrange the order of arguments to be the most sensible
+
+    #subparser = parser.add_subparsers(title='subcommands', help='Use `subcommand -h` for additional help.')
+    subparser = parser.add_subparsers(
+            description='Use `%(prog)s <subcommand> -h` for additional help.',
+            dest='subcommand',
     )
+    parser_link = subparser.add_parser('link', help='Link to an existing device.')
+    parser_link.add_argument(
+            '-n',
+            '--name',
+            default='scli',
+            #'name',
+            #metavar='DEVICE_NAME'
+            help='Device name that will be shown in "Linked devices" list on master device. Default is "scli".'
+            # TODO: print default in help message
+    )
+    #parser_link.set_defaults(func=link_device)
+
+    #parser_main = subparser.add_parser('')
+
+    #parser.add_argument(
+        #'-l',
+        #'--link',
+        #nargs='?',
+        #const='scli',
+        #type=str,
+        #metavar='CUSTOM_NAME',
+        #help='Link a device. If you skip CUSTOM_NAME, device name will be registered as "scli".'
+    #)
 
     parser.add_argument(
         '-c',
         '--config-file',
-        type=str,
         default=SCLI_CFG_FILE,
-        help='Config file. Configs in this file overrides every other config supplied by command line. (Default: '
-        + SCLI_CFG_FILE
-        + ')',
+        help='Path to the config file. Arguments on the command line override settings in the file.',
     )
 
-    parser.add_argument('-u', '--username', type=str, help='Phone number starting with "+" followed by country code.')
+    parser.add_argument(
+        '--log-file',
+        default=SCLI_LOG_FILE,
+        help='Path to the log file. If not specified, logs are written only if `--debug` or `--save-history` are on.',
+    )
+
+    parser.add_argument(
+            '-u',
+            '--username',
+            help='Phone number starting with "+" followed by country code. If not given, %(prog)s will look for an existing profile in signal-cli\'s data dir.'
+    )
 
     parser.add_argument(
         '-n',
         '--enable-notifications',
-        default=False,
         action='store_true',
-        help='Enable desktop notifications. (Also see --notification-command)',
+        help='Enable desktop notifications. See also: `--notification-command`',
     )
 
     parser.add_argument(
         '-N',
         '--notification-command',
-        type=str,
         default="notify-send scli '%s - %m'",
-        help='The command to run when a new message arrives. %%m is replaced with the message, %%s is replaced with the sender. (Default is "notify-send scli \'%%s - %%m\'',
+        #default=["notify-send", "scli", "%s - %m"],
+        help='Command to run when a new message arrives. %%m is replaced with the message, %%s is replaced with the sender.',
     )
 
     parser.add_argument(
         '-o',
         '--open-command',
-        type=str,
         default='xdg-open "%u"',
-        help='File/URL opener command. %%u is replaced with the path. (Default is "xdg-open %%u")',
+        help='File/URL opener command. %%u is replaced with the path.',
     )
 
     parser.add_argument(
         '-e',
         '--editor-command',
-        type=str,
-        default='$EDITOR',
-        help='A text editor command to edit your messages externally.',
+        #default='$EDITOR',
+        help='External text editor command. If not set, %(prog)s checks among `$VISUAL`, `$EDITOR`, `sensible-editor` etc.',
+        # TODO: ? write a script that checks other options?
+            # https://unix.stackexchange.com/questions/316856/command-for-the-default-in-terminal-text-editor
+            # also `editor` is available on my system
     )
 
     parser.add_argument(
+        # TODO: make default = None (omit it here)
         '-G',
         '--clipboard-get-command',
-        type=str,
-        default="",
-        help='A command that returns a valid file path(s). When user calls `:attachClip` or `:c`, this command is executed and the returned file(s) will be added as attachment(s). The command should return one absolute file path per each line. (Default uses `xclip`)',
+        #default="",
+        #default=argparse.SUPPRESS,
+        #help='A command that returns a valid file path(s). When user calls `:attachClip` or `:c`, this command is executed and the returned file(s) will be added as attachment(s). The command should return one absolute file path per each line. (Default uses `xclip`)',
+        help='Command used by `:attachClip` to get a list of files to send as attachments. Should return one absolute file path per line. If not set, `xclip` is used.'
     )
 
     parser.add_argument(
         '-P',
         '--clipboard-put-command',
-        type=str,
-        default="",
-        help='A command that puts given text to clipboard. %%s will be replaced with the text. (Default uses `xclip`.',
+        #type=str,
+        #default="",
+        #help='A command that puts given text to clipboard. %%s will be replaced with the text. (Default uses `xclip`.',
+        help='Command to put text on clipboard. %%s will be replaced with the text. If not set, `xclip` is used.',
     )
 
     parser.add_argument(
         '-s',
         '--save-history',
-        default=False,
         action='store_true',
-        help='Enable saving history. History is saved as plain text. (Disabled by default.)',
+        help='Enable conversations history. History is saved as plain text.',
     )
 
     parser.add_argument(
         '-f',
         '--use-formatting',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Use _italic_, *bold*, ~strikethrough~ formatting in messages. (Disabled by default.)',
+        help='Use _italic_, *bold*, ~strikethrough~ formatting in messages.',
     )
 
-    parser.add_argument('-w', '--wrap-at', type=int, default=300, help='Wrap messages at given column.')
+    parser.add_argument(
+        '-w',
+        '--wrap-at',
+        type=int,
+        default=300,
+        #help='Wrap messages at given column.'
+        help='Wrap message text lines longer then this value',
+    )
 
     parser.add_argument(
         '--one-sided',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Show messages aligned to one side in message list. (Disabled by default.)',
+        #help='Show messages aligned to one side in message list. (Disabled by default.)',
+        help='Left-align both sent and received messages',
     )
 
     parser.add_argument(
         '--show-names',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Show contact names even in message list even if it is one-to-one conversation. (Disabled by default.)',
+        help="Show contacts' names next to messages, even in one-to-one conversations.",
     )
 
     parser.add_argument(
         '--group-contacts',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Show groups and contacts seperately under the left pane. (Disabled by default)',
+        help='Show groups and individual contacts seperately in the contacts list.',
     )
 
     parser.add_argument(
         '--contacts-autohide',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Autohide the contacts pane when it loses focus. (Disabled by default)',
+        help='Autohide the contacts pane when it loses focus.',
     )
 
     parser.add_argument(
         '--contacts-sort-alpha',
-        default=False,
+        #default=False,
         action='store_true',
-        help='Sort contacts alphabetically. (Default: sort by the most recent message)',
+        help='Sort contacts alphabetically, not by the most recent message.',
     )
 
-    parser.add_argument('--no-daemon', action='store_true', help='Not really useful.')
+    parser.add_argument(
+        '--no-daemon',
+        action='store_true',
+        #help='Do not start signal-cli daemon. Only used for debugging scli', # NOTE: keep this comment
+        help=argparse.SUPPRESS
+    )
 
-    parser.add_argument('--debug', default=False, action='store_true')
+    parser.add_argument(
+        '--debug',
+        #default=False,
+        action='store_true',
+        help='Verbose log output.',
+    )
 
-    cfg = parser.parse_args()
+    #parser.add_argument(
+        #'--version',
+        ##default=False,
+        #action='version',
+        #version='nada',
+        ##help='test',
+    #)
 
-    if cfg.link:
-        link_device(cfg.link)
-        sys.exit(0)
+    parser.add_argument(
+            '--version',
+            action='version',
+            version='%(prog)s ' + get_version()
+            #version='%s' % get_version()
+            #version='%(prog)s '
+            #version='nada'
+    )
 
-    file_cfg = parse_cfg_file(cfg.config_file)
-    for key, val in file_cfg.items():
-        attr = getattr(cfg, key)
-        if isinstance(attr, bool):
-            setattr(cfg, key, val.lower() in ['true', 't', 'yes', 'y'])
-        elif isinstance(attr, int):
-            setattr(cfg, key, int(val))
+    return parser
+
+def get_cfg_file_args(file_obj):
+    # Alternatively, can override `ArgumentParser.convert_arg_line_to_args()`
+    ret = {}
+    for line in file_obj:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        #print(line)
+        name, _, val = line.partition("=")
+        print(name, val)
+        #val = val.strip()
+        #if val.lower() in ('true', 't', 'yes', 'y'):
+            #val = True
+        #ret[name.strip().replace('-', '_')] = val
+        ret[name.strip()] = val.strip()
+    return ret
+
+def parse_cfg_file(parser, cli_args):
+    #print(dir(parser))
+    cfg_file_path = os.path.expanduser(cli_args.config_file)
+    try:
+        #cfg_f_args_dict = parse_cfg_file(cli_args.config_file)
+        with open(cfg_file_path) as cfg_f:
+            cfg_f_args_dict = get_cfg_file_args(cfg_f)
+    except FileNotFoundError:
+        #elif cfg_file_path != SCLI_CFG_FILE and cfg_file_path != "":
+        #print('Given config file not found: ' + cfg_file_path, file=sys.stderr)
+        #if cli_args.config_file == SCLI_CFG_FILE:
+            # to do get_default(), need ArgumentParser obj; so checking explicitly
+        if cli_args.config_file == parser.get_default('config_file'):
+            return cli_args
+        sys.exit("Config file not found: " + cfg_file_path)
+    print(cfg_f_args_dict)
+    #cfg_file_args = argparse.Namespace()
+    #cfg_file_args.__dict__.update(cfg_f_args_dict)
+    args_list = []
+    for arg_name, arg_val in cfg_f_args_dict.items():
+        try:
+            cli_arg_val = getattr(cli_args, arg_name.replace('-', '_'))
+        except AttributeError:
+            #sys.exit("Error while parsing config file: unrecognized argument: " + arg_name)
+            # Skip rather then exit, just in case some arguments use argparse.SUPPRESS
+            logging.error("Error while parsing config file: unrecognized argument: %s", arg_name)
+            continue
+        arg_name = '--' + arg_name
+        if isinstance(cli_arg_val, bool):
+            if arg_val.lower() in ('true', 't', 'yes', 'y'):
+                args_list.append(arg_name)
         else:
-            setattr(cfg, key, val)
+            args_list.extend((arg_name, arg_val))
+    print(args_list)
+    # NOTE: Need to actually parse the arguments (rather then simply updating args.__dict__), so that the `type`s would be set correctly.
+    cfg_file_args = parser.parse_args(args_list)
+    print(cfg_file_args)
+    #cli_args = parser.parse_args(namespace=cfg_file_args)
+    # NOTE: settings in the config file are overriden by arguments on the command line
+    parser.parse_args(namespace=cfg_file_args)
+    #print(cfg_file_args)
+        # https://stackoverflow.com/questions/28348117/using-argparse-and-json-together
+    #cfg_file_args.__dict__.update(cli_args.__dict__)
+    #print(cfg_file_args)
+    #for key, val in cfg_f_args_dict.items():
+        #attr = getattr(cli_args, key)
+        #if isinstance(attr, bool):
+            #setattr(cli_args, key, val.lower() in ['true', 't', 'yes', 'y'])
+        #elif isinstance(attr, int):
+            #setattr(cli_args, key, int(val))
+        #else:
+            #setattr(cli_args, key, val)
+    #return cli_args
+    return cfg_file_args
+
+def parse_args():
+    parser = make_arg_parser()
+    #print(dir(parser))
+
+    args = parser.parse_args()
+    print("     ", args)
+
+    if args.config_file:
+        args = parse_cfg_file(parser, args)
+        #test_debug = parse_cfg_file(parser, args)
+
+    if args.editor_command is None:
+        args.editor_command = get_default_editor()
+
+    # DEBUG
+    print("     ", args)
+    #sys.exit()
+
+    return args
+
+
+def main():
+
+    __version__ = get_version()
+
+    args = parse_args()
+
+    # Configure logging ASAP
+    if args.debug:
+        logging.basicConfig(filename=args.log_file, level=logging.DEBUG)
+    elif args.save_history or args.log_file != SCLI_LOG_FILE:
+        logging.basicConfig(filename=args.log_file, level=logging.WARNING)
+    else:
+        # NOTE: If saving history in plain text is disabled, and `--debug` was not suppplied, don't write to the log file either - the output can contain sensitive info.  # ( ? Remove this as a comemnt, and add as a commit msg?)
+        logging.disable()
+
+    #logging.debug("test test debug")
+    logging.warning("test test warning")
+    logging.info("scli %s", get_version())
+    sys.exit()
+
+    #if args.link:
+    if args.subcommand == 'link':
+        #print(args.subcommand)
+        #args.func(args)
+        #link_device(args.link)
+        link_device(args.name)
+        sys.exit()
 
     if not os.path.exists(SCLI_DATA_FOLDER):
         try:
@@ -2699,21 +2962,16 @@ def main():
                 print("Can't create data directory.", file=sys.stderr)
                 sys.exit(3)
 
-    if cfg.debug:
-        logging.basicConfig(filename=SCLI_LOG_FILE, level=logging.DEBUG)
-    else:
-        logging.basicConfig(filename=SCLI_LOG_FILE, level=logging.CRITICAL)
+    if not args.username:
+        args.username = detect_user_name()
 
-    if not cfg.username:
-        cfg.username = detect_user_name()
-
-    state = State(ObservableConfig(cfg))
+    state = State(ObservableConfig(args))
     window = MainWindow(state)
 
     loop = urwid.MainLoop(window, palette=PALETTE)
     state.loop = state.signal.daemon._urwid_loop = loop
 
-    if not cfg.no_daemon:
+    if not args.no_daemon:
         proc = state.signal.start_daemon()
         atexit.register(proc.kill)
         state.set_notification("Initializing signal-cli daemon... ")
