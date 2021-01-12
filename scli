@@ -202,13 +202,9 @@ def get_prog_dir():
     return os.path.dirname(os.path.realpath(__file__))
 
 def get_version():
-    LATEST_RELEASE = "0.2.2"
-        # If we don't have a build / packaging step, this var has to be set manually (before doing `git tag`).
-        # Alternatively, make a github action to use `export-subst` for `git-archive`
-            # TODO: experiment
-        # Omit the "v" before the numbers.
+    # Do not use `logging` here, as it's called before logging is setup.
     prog_dir = get_prog_dir()
-    #logging.debug(prog_dir)
+    print(prog_dir)
     git_dir = os.path.join(prog_dir, '.git')
     git_cmd = ['git', '--git-dir', git_dir, 'describe']
     #git_cmd = ['git', 'describe']
@@ -220,8 +216,23 @@ def get_version():
         #return proc.stdout
         return proc.stdout.strip()
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return LATEST_RELEASE
-        # NOTE: this version will be wrong if a code blob (not a release) is downloaded (as an archive, not cloned with git), and has new commits since the last release.
+        print(proc)
+        #pass
+
+    version_file_path = os.path.join(prog_dir, 'VERSION')
+    with open(version_file_path) as f:
+        version_str = f.readline()
+    print(repr(version_str))
+    # Assumes VERSION is formatted with `$Format:%h %d$`
+    if version_str.startswith('$'):
+        return None
+    TAG_RE = r"tag: v(.+?)[,)]"
+    tag_re = re.compile(TAG_RE)
+    tag_re_match = tag_re.search(version_str)
+    if tag_re_match:
+        return tag_re_match.group(1)
+    return version_str.split(maxsplit=1)[0]   # commit hash
+
 
 PHONE_NUM_REGEX = re.compile('^\\+[1-9][0-9]{6,14}$')
 # https://github.com/signalapp/libsignal-service-java/blob/master/java/src/main/java/org/whispersystems/signalservice/api/util/PhoneNumberFormatter.java
@@ -2825,7 +2836,7 @@ def make_arg_parser():
     parser.add_argument(
             '--version',
             action='version',
-            version='%(prog)s ' + get_version()
+            version='%(prog)s ' + __version__
             #version='%s' % get_version()
             #version='%(prog)s '
             #version='nada'
@@ -2925,11 +2936,9 @@ def parse_args():
 
     return args
 
+__version__ = get_version()
 
 def main():
-
-    __version__ = get_version()
-
     args = parse_args()
 
     # Configure logging ASAP
@@ -2943,7 +2952,7 @@ def main():
 
     #logging.debug("test test debug")
     logging.warning("test test warning")
-    logging.info("scli %s", get_version())
+    logging.info("scli %s", __version__)
     sys.exit()
 
     #if args.link:
