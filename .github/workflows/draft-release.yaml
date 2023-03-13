@@ -54,5 +54,6 @@ jobs:
             --draft \
             --verify-tag \
             --notes "$TAG_MSG" \
+            --title "$REF_NAME" \
             "$REF_NAME" \
             "$GIT_ARCHIVE_FILE"
