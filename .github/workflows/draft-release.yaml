@@ -52,7 +52,6 @@ jobs:
         run: |
           gh release create \
             --draft \
-            --target "$REF_NAME" \
             --verify-tag \
             --notes "$TAG_MSG" \
             "$REF_NAME" \
